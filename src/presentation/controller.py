@@ -1471,7 +1471,7 @@ class NjordAnaEkran(QMainWindow):
             layout.addWidget(voltage_lcd, 2, 0, 1, 2)
 
         if not hasattr(self, "LBATTERYWH"):
-            self.LBATTERYWH = QtWidgets.QLabel("EST. ENERGY LEFT: 0.0 Wh", self.groupBox_3)
+            self.LBATTERYWH = QtWidgets.QLabel("ENERGY LEFT: 0.0 Wh", self.groupBox_3)
 
         energy_style = f"font-size: {9 if kompakt else 10}pt; font-weight: bold; color: #0b2239;"
         self.LBATTERYWH.show()
@@ -2109,13 +2109,29 @@ class NjordAnaEkran(QMainWindow):
             "QProgressBar::chunk { background-color: #3498db; border-radius: 3px; }"
         )
         self._acil_stop_stili = (
-            "QPushButton { background-color: #c0392b; color: white; "
-            "border-radius: 10px; font-weight: bold; padding: 8px; "
-            "border: 2px solid #922b21; }"
-            "QPushButton:hover { background-color: #e74c3c; }"
-            "QPushButton:pressed { background-color: #922b21; }"
-            "QPushButton:disabled { background-color: #95a5a6; color: #ecf0f1; "
-            "border: 2px solid #7f8c8d; }"
+            "QPushButton { background-color: #b71c1c; color: white; "
+            "border-radius: 0px; font-size: 11pt; font-weight: 900; padding: 8px; "
+            "border: 3px solid #4a0000; }"
+            "QPushButton:hover { background-color: #c62828; border-color: #210000; }"
+            "QPushButton:pressed { background-color: #7f0000; "
+            "border: 3px solid #210000; }"
+            "QPushButton:disabled { background-color: #666666; color: #dddddd; "
+            "border: 3px solid #333333; }"
+        )
+        self._safe_start_stili = (
+            "QPushButton { background-color: #1b5e20; color: white; "
+            "border-radius: 0px; font-size: 11pt; font-weight: 900; padding: 8px; "
+            "border: 3px solid #073b0b; }"
+            "QPushButton:hover { background-color: #237a2a; border-color: #032306; }"
+            "QPushButton:pressed { background-color: #0d4212; "
+            "border: 3px solid #032306; }"
+            "QPushButton:disabled { background-color: #666666; color: #dddddd; "
+            "border: 3px solid #333333; }"
+        )
+        self._relay_pending_stili = (
+            "QPushButton { background-color: #b26a00; color: white; "
+            "border-radius: 0px; font-size: 11pt; font-weight: 900; padding: 8px; "
+            "border: 3px solid #5f3700; }"
         )
 
         for buton in (
@@ -2502,7 +2518,7 @@ class NjordAnaEkran(QMainWindow):
         if hasattr(self, "lcdNumber_2"):
             self.lcdNumber_2.display(voltage)
         if hasattr(self, "LBATTERYWH"):
-            self.LBATTERYWH.setText(f"EST. ENERGY LEFT: {remaining_wh:.1f} Wh")
+            self.LBATTERYWH.setText(f"ENERGY LEFT: {remaining_wh:.1f} Wh")
 
     def _arac_bagli_mi(self, d):
         return bool(
@@ -2520,10 +2536,10 @@ class NjordAnaEkran(QMainWindow):
             self.comboBox_2,
         )
 
-    def _arac_komutlarini_guncelle(self, bagli):
+    def _arac_komutlarini_guncelle(self, bagli, durum=None):
         aktif = bool(bagli)
         if self._arac_komutlari_aktif == aktif:
-            self._acil_stop_butonunu_guncelle(aktif)
+            self._acil_stop_butonunu_guncelle(aktif, durum)
             return
 
         self._arac_komutlari_aktif = aktif
@@ -2533,18 +2549,40 @@ class NjordAnaEkran(QMainWindow):
         if not aktif:
             self._arac_komutlarini_kilitle()
         else:
-            self._acil_stop_butonunu_guncelle(True)
+            self._acil_stop_butonunu_guncelle(True, durum)
 
-    def _acil_stop_butonunu_guncelle(self, bagli):
+    def _acil_stop_butonunu_guncelle(self, bagli, durum=None):
         aktif = bool(bagli)
-        durum = (aktif, bool(getattr(self, "_kompakt_duzen_aktif", False)))
-        if self._stop_buton_gorunum_durumu == durum:
+        durum = durum or {}
+        relay_active = bool(durum.get("emergency_relay_active"))
+        relay_pending = bool(durum.get("emergency_relay_pending"))
+        gorunum = (
+            aktif,
+            relay_active,
+            relay_pending,
+            bool(getattr(self, "_kompakt_duzen_aktif", False)),
+        )
+        if self._stop_buton_gorunum_durumu == gorunum:
             return
-        self._stop_buton_gorunum_durumu = durum
-        if self.pushButton_7.isEnabled() != aktif:
-            self.pushButton_7.setEnabled(aktif)
-        self.pushButton_7.setStyleSheet(self._acil_stop_stili)
-        self.pushButton_7.setText("EMERGENCY STOP" if aktif else "STOP LOCKED")
+        self._stop_buton_gorunum_durumu = gorunum
+
+        buton_aktif = aktif and not relay_pending
+        if self.pushButton_7.isEnabled() != buton_aktif:
+            self.pushButton_7.setEnabled(buton_aktif)
+        if not aktif:
+            self.pushButton_7.setStyleSheet(self._acil_stop_stili)
+            self.pushButton_7.setText("STOP LOCKED")
+        elif relay_pending:
+            self.pushButton_7.setStyleSheet(self._relay_pending_stili)
+            self.pushButton_7.setText(
+                "CUTTING POWER..." if not relay_active else "SAFE STARTING..."
+            )
+        elif relay_active:
+            self.pushButton_7.setStyleSheet(self._safe_start_stili)
+            self.pushButton_7.setText("SAFE START")
+        else:
+            self.pushButton_7.setStyleSheet(self._acil_stop_stili)
+            self.pushButton_7.setText("EMERGENCY STOP")
 
     def _arac_komutlarini_kilitle(self):
         self._arm_komut_bekliyor = False
@@ -2558,7 +2596,7 @@ class NjordAnaEkran(QMainWindow):
         if hasattr(self, "pushButton_8"):
             self.pushButton_8.hide()
         self._stop_buton_gorunum_durumu = None
-        self._acil_stop_butonunu_guncelle(False)
+        self._acil_stop_butonunu_guncelle(False, {})
         self.pushButton_6.setStyleSheet(self._komut_buton_stili)
         self.pushButton_6.setText("NO VEHICLE")
         self.comboBox_2.setStyleSheet(self._mode_combo_stili)
@@ -2654,7 +2692,7 @@ class NjordAnaEkran(QMainWindow):
                 )
                 self.pushButton_wifi.setText("WI-FI INACTIVE")
 
-        self._arac_komutlarini_guncelle(bagli)
+        self._arac_komutlarini_guncelle(bagli, d)
         if not bagli:
             return
 

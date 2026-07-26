@@ -47,6 +47,23 @@ MODE_NAME_TO_ID = {name: mode_id for mode_id, name in ARDUROVER_MODS.items()}
 
 HEARTBEAT_TIMEOUT = 5.0
 MODE_CHANGE_TIMEOUT = 8.0
+RELAY_COMMAND_TIMEOUT = 5.0
+# Pixhawk configuration:
+# RELAY5_PIN=54, RELAY5_DEFAULT=0, RELAY5_INVERTED=1,
+# SERVO13_FUNCTION=-1. ArduPilot MAVLink relay numbering is zero-based, so
+# RELAY5 is Relay No 4 and its pin 54 is physical AUX OUT 5. Because the output
+# is inverted, logical OFF produces physical HIGH and logical ON produces LOW.
+EMERGENCY_RELAY_NUMBER = int(os.getenv("EMERGENCY_RELAY_NUMBER", "4"))
+EMERGENCY_RELAY_INVERTED = (
+    os.getenv("EMERGENCY_RELAY_INVERTED", "1").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+EMERGENCY_RELAY_DEFAULT_ON = (
+    os.getenv("EMERGENCY_RELAY_DEFAULT_ON", "0").strip().lower()
+    in {"1", "true", "yes", "on"}
+)
+# Hardware test: logical relay ON cuts power and logical OFF enables power.
+EMERGENCY_RELAY_INITIAL_ACTIVE = EMERGENCY_RELAY_DEFAULT_ON
 ARDUPILOT_FORCE_ARM_MAGIC = 21196
 BATTERY_EMPTY_VOLTAGE = 21.0
 BATTERY_FULL_VOLTAGE = 25.2
@@ -136,6 +153,8 @@ class NjordVeriSistemi(QObject):
         self._last_video_wait_log = 0.0
         self._last_mode_failure_diagnostic = 0.0
         self._mode_change_requested_at = 0.0
+        self._emergency_relay_requested_at = 0.0
+        self._emergency_relay_requested_state = None
         self.backend_client = BackendClient()
         self._mission_id = None
         self._mission_uploaded_to_pixhawk = False
@@ -172,6 +191,8 @@ class NjordVeriSistemi(QObject):
             "requested_arm_state": False,
             "mode_change_pending": False,
             "requested_mode": -1,
+            "emergency_relay_active": EMERGENCY_RELAY_INITIAL_ACTIVE,
+            "emergency_relay_pending": False,
             "wifi_aktif": False,
             "jetson_ip": "Searching...",
             "battery": {
@@ -238,6 +259,8 @@ class NjordVeriSistemi(QObject):
         self._mission_uploaded_to_pixhawk = False
         self._telemetry_lost_reported = True
         self._mode_change_requested_at = 0.0
+        self._emergency_relay_requested_at = 0.0
+        self._emergency_relay_requested_state = None
         self._set(
             **self._telemetri_degerlerini_sifirla(),
             baglanti=not physical_disconnect,
@@ -251,6 +274,7 @@ class NjordVeriSistemi(QObject):
             arm_change_pending=False,
             mode_change_pending=False,
             requested_mode=-1,
+            emergency_relay_pending=False,
             decision_log=decision_log,
         )
 
@@ -679,6 +703,7 @@ class NjordVeriSistemi(QObject):
                 arm_change_pending=False,
                 mode_change_pending=False,
                 requested_mode=-1,
+                emergency_relay_pending=False,
                 decision_log="Connection established. Waiting for heartbeat...",
             )
             self._log("Telemetry connection started.")
@@ -698,6 +723,7 @@ class NjordVeriSistemi(QObject):
                 arm_change_pending=False,
                 mode_change_pending=False,
                 requested_mode=-1,
+                emergency_relay_pending=False,
                 decision_log=f"CONNECTION ERROR: {exc}",
             )
         finally:
@@ -710,6 +736,8 @@ class NjordVeriSistemi(QObject):
         self._camera_started = False
         self._watchdog_started = False
         self._mission_uploaded_to_pixhawk = False
+        self._emergency_relay_requested_at = 0.0
+        self._emergency_relay_requested_state = None
 
         if self.connection:
             try:
@@ -734,6 +762,7 @@ class NjordVeriSistemi(QObject):
             arm_change_pending=False,
             mode_change_pending=False,
             requested_mode=-1,
+            emergency_relay_pending=False,
             decision_log="CONNECTION CLOSED",
         )
         self._log("CONNECTION CLOSED")
@@ -867,6 +896,7 @@ class NjordVeriSistemi(QObject):
                 radio_failsafe = bool(self._durum.get("radio_failsafe"))
                 mode_change_pending = bool(self._durum.get("mode_change_pending"))
                 requested_mode = int(self._durum.get("requested_mode", -1))
+                relay_pending = bool(self._durum.get("emergency_relay_pending"))
 
             if (
                 mode_change_pending
@@ -887,6 +917,23 @@ class NjordVeriSistemi(QObject):
                     f"WARNING: {requested_name} MODE confirmation timed out; "
                     "using the latest heartbeat mode."
                 )
+
+            if (
+                relay_pending
+                and self._emergency_relay_requested_at > 0
+                and time.monotonic() - self._emergency_relay_requested_at
+                > RELAY_COMMAND_TIMEOUT
+            ):
+                self._emergency_relay_requested_at = 0.0
+                self._emergency_relay_requested_state = None
+                self._set(
+                    emergency_relay_pending=False,
+                    decision_log=(
+                        "Emergency relay command was not confirmed by Pixhawk. "
+                        "Relay state was not changed."
+                    ),
+                )
+                self._log("ERROR: Emergency relay confirmation timed out.")
 
             if baglanti_var and not heartbeat_seen and baslangictan_beri > HEARTBEAT_TIMEOUT:
                 if not telemetry_lost_reported:
@@ -1102,6 +1149,61 @@ class NjordVeriSistemi(QObject):
             command_name = self._mavlink_command_name(command)
             result_name = self._mavlink_result_name(result)
             self._log(f"COMMAND ACK: {command_name} -> {result_name}")
+            command_value = int(command if command is not None else -1)
+            result_value = int(result if result is not None else -1)
+            if command_value == mavutil.mavlink.MAV_CMD_DO_SET_RELAY:
+                with self._lock:
+                    relay_pending = bool(
+                        self._durum.get("emergency_relay_pending")
+                    )
+                    requested_state = self._emergency_relay_requested_state
+
+                if not relay_pending or requested_state is None:
+                    self._log(
+                        "INFO: Ignoring DO_SET_RELAY ACK because no relay "
+                        "command is pending."
+                    )
+                elif not self._kilitli_arac_kaynagi_mi(msg):
+                    self._log(
+                        "WARNING: Ignoring DO_SET_RELAY ACK from a source "
+                        "other than the locked Pixhawk."
+                    )
+                elif result_value == mavutil.mavlink.MAV_RESULT_IN_PROGRESS:
+                    self._log(
+                        "INFO: Pixhawk reports relay command in progress; "
+                        "waiting for final confirmation."
+                    )
+                elif result_value == mavutil.mavlink.MAV_RESULT_ACCEPTED:
+                    relay_active = bool(requested_state)
+                    expected_aux_high = (
+                        relay_active != EMERGENCY_RELAY_INVERTED
+                    )
+                    self._emergency_relay_requested_at = 0.0
+                    self._emergency_relay_requested_state = None
+                    self._set(
+                        emergency_relay_active=relay_active,
+                        emergency_relay_pending=False,
+                        decision_log=(
+                            "Emergency active: vehicle power cut."
+                            if relay_active
+                            else "Safe start active: vehicle power enabled."
+                        ),
+                    )
+                    self._log(
+                        "Pixhawk accepted AUX OUT 5 relay command; "
+                        f"expected physical level is "
+                        f"{'HIGH' if expected_aux_high else 'LOW'}."
+                    )
+                else:
+                    self._emergency_relay_requested_at = 0.0
+                    self._emergency_relay_requested_state = None
+                    self._set(
+                        emergency_relay_pending=False,
+                        decision_log=(
+                            "Emergency relay command rejected by Pixhawk; "
+                            "relay state was not changed."
+                        ),
+                    )
 
         elif msg_type == "TUNNEL":
             payload_type = int(getattr(msg, "payload_type", -1))
@@ -2213,29 +2315,6 @@ class NjordVeriSistemi(QObject):
             self._log("MAVLink MISSION_START command sent.")
         return ok
 
-    def _rc_stop_gonder(self, repeat=5):
-        if not self.connection:
-            return
-        target_system, target_component = self._mavlink_hedefleri(component_zero=False)
-        for _ in range(repeat):
-            try:
-                self.connection.mav.rc_channels_override_send(
-                    target_system,
-                    target_component,
-                    1500,
-                    0,
-                    1500,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                )
-            except Exception as exc:
-                self._log(f"WARNING: RC stop override failed: {exc}")
-                return
-            time.sleep(0.03)
-
     def gorev_waypoints_yukle(self, waypoints_yolu, mission_name=None):
         waypoints_yolu = str(waypoints_yolu)
         mission_name = mission_name or Path(waypoints_yolu).stem
@@ -2336,16 +2415,75 @@ class NjordVeriSistemi(QObject):
         return self.gorev_waypoints_yukle(txt_yolu, mission_name=mission_name)
 
     def acil_durum(self):
-        self._arkaplan_calistir("MAVLinkEmergencyStop", self._acil_durum_mavlink)
-
-    def _acil_durum_mavlink(self):
-        self._rc_stop_gonder()
-        self._mod_ayarla_mavlink(4, replace_pending=True)
-        self._disarm_yap_mavlink()
-        self._set(
-            decision_log="!!! EMERGENCY STOP ACTIVE: HOLD + DISARM requested !!!",
+        with self._lock:
+            if self._durum.get("emergency_relay_pending"):
+                self._log("INFO: Emergency relay command is already pending.")
+                return
+            target_emergency_active = not bool(
+                self._durum.get("emergency_relay_active")
+            )
+        self._arkaplan_calistir(
+            "MAVLinkEmergencyRelay",
+            self._acil_durum_mavlink,
+            target_emergency_active,
         )
-        self._log("!!! MAVLink EMERGENCY STOP: HOLD + DISARM !!!")
+
+    def _acil_durum_mavlink(self, target_emergency_active):
+        if not self.connection or not self._telemetri_saglikli_mi():
+            self._log(
+                "ERROR: No healthy telemetry connection. "
+                "Emergency relay command was not sent."
+            )
+            return
+
+        target_system, target_component = self._mavlink_hedefleri(
+            component_zero=False
+        )
+        requested_state = bool(target_emergency_active)
+        # The connected contactor was verified on hardware: logical relay ON
+        # cuts power, while logical relay OFF enables power. RELAY5_INVERTED
+        # still determines the expected physical AUX OUT 5 voltage.
+        relay_command_on = requested_state
+        expected_aux_high = relay_command_on != EMERGENCY_RELAY_INVERTED
+        self._emergency_relay_requested_state = requested_state
+        self._emergency_relay_requested_at = time.monotonic()
+        self._set(
+            emergency_relay_pending=True,
+            decision_log=(
+                "Emergency stop command sent; waiting for Pixhawk confirmation..."
+                if requested_state
+                else "Safe start command sent; waiting for Pixhawk confirmation..."
+            ),
+        )
+        try:
+            self.connection.mav.command_long_send(
+                target_system,
+                target_component,
+                mavutil.mavlink.MAV_CMD_DO_SET_RELAY,
+                0,
+                float(EMERGENCY_RELAY_NUMBER),
+                1.0 if relay_command_on else 0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            )
+            self._log(
+                "MAVLink DO_SET_RELAY sent: "
+                f"relay={EMERGENCY_RELAY_NUMBER}, "
+                f"logical_state={'ON' if relay_command_on else 'OFF'}, "
+                f"expected_aux5={'HIGH' if expected_aux_high else 'LOW'}, "
+                f"inverted={int(EMERGENCY_RELAY_INVERTED)}."
+            )
+        except Exception as exc:
+            self._emergency_relay_requested_at = 0.0
+            self._emergency_relay_requested_state = None
+            self._set(
+                emergency_relay_pending=False,
+                decision_log=f"Emergency relay command failed: {exc}",
+            )
+            self._log(f"ERROR: Emergency relay command failed: {exc}")
 
     def durum_al(self):
         return self._snapshot()
