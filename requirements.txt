@@ -1,16 +1,5 @@
-# MAVLİNK
-fastcrc
-lxml>=3.6.0
-setuptools>=42
-wheel>=0.37.1
-pytest<=7.4.4
-syrupy; python_version>='3.6'
-wsproto
-
 opencv-python
-numpy
-pyzed
-pyqt5
+PyQt5
 pymavlink>=2.4.49
 pyserial
-flask
+requests
