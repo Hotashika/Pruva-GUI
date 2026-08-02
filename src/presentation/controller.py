@@ -34,16 +34,14 @@ SMOOTH = getattr(getattr(Qt, "TransformationMode", None), "SmoothTransformation"
 if SMOOTH is None:
     SMOOTH = getattr(Qt, "SmoothTransformation", 1)
 
-MAP_IMAGE_FILE = "ecdat_map.png"
-MAP_IMAGE_SIZE = (592, 832)
+MAP_IMAGE_FILE = "trondheim_harbor_map.png"
+MAP_IMAGE_SIZE = (891, 801)
 BASE_UI_SIZE = (1680, 945)
 MAP_CALIBRATION_POINTS = [
-    {"name": "WP1", "lat": 37.9524548, "lon": 32.5009435, "pixel": (260, 92)},
-    {"name": "WP2", "lat": 37.9524210, "lon": 32.5015175, "pixel": (475, 98)},
-    {"name": "WP3", "lat": 37.9514904, "lon": 32.5013566, "pixel": (421, 482)},
-    {"name": "WP4", "lat": 37.9510082, "lon": 32.5012600, "pixel": (376, 704)},
-    {"name": "WP5", "lat": 37.9510589, "lon": 32.5006807, "pixel": (190, 694)},
-    {"name": "WP6", "lat": 37.9516681, "lon": 32.5006807, "pixel": (194, 374)},
+    {"name": "WP1", "lat": 63.4401875, "lon": 10.4230213, "pixel": (573, 772)},
+    {"name": "WP2", "lat": 63.4429889, "lon": 10.4254889, "pixel": (785, 226)},
+    {"name": "WP3", "lat": 63.4438715, "lon": 10.4198241, "pixel": (297, 57)},
+    {"name": "WP4", "lat": 63.4417130, "lon": 10.4171205, "pixel": (63, 470)},
 ]
 # 6S 10 Ah battery: 22.2 V nominal x 10 Ah = 222 Wh.
 DEFAULT_BATTERY_CAPACITY_WH = 222.0
